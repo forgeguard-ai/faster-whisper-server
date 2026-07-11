@@ -7,8 +7,8 @@ later, prompt for an API key) before it holds any credentials.
 import mimetypes
 import os
 
-from fastapi import APIRouter, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from server import config
 from server.version import __version__
@@ -31,6 +31,13 @@ async def web_config() -> JSONResponse:
 
 
 @router.get("/web")
+async def web_redirect(request: Request) -> RedirectResponse:
+    # Redirect the slash-less path to /web/ so the SPA's relative asset URLs
+    # (built with Vite base './') resolve under /web/ instead of the site root.
+    # Appending to the path as seen keeps this correct behind a reverse-proxy prefix.
+    return RedirectResponse(url=request.url.path + "/", status_code=308)
+
+
 @router.get("/web/")
 @router.get("/web/{filename:path}")
 async def serve_web(filename: str = "") -> FileResponse:

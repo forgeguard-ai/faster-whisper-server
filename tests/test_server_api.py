@@ -34,6 +34,22 @@ def test_requires_api_key():
     assert r.status_code == 401
 
 
+def test_web_slashless_redirects_to_trailing_slash():
+    # The SPA is built with relative asset URLs (Vite base './'), so /web must
+    # redirect to /web/ or the assets resolve against the site root and 404.
+    # The web router is only mounted when ENABLE_WEB_UI=true (conftest disables
+    # it), so exercise it on a standalone app.
+    from fastapi import FastAPI
+
+    from server import web
+
+    web_app = FastAPI()
+    web_app.include_router(web.router)
+    r = TestClient(web_app).get("/web", follow_redirects=False)
+    assert r.status_code == 308
+    assert r.headers["location"] == "/web/"
+
+
 def test_models_endpoint_auth_pair():
     assert client.get("/v1/models").status_code == 401
     r = client.get("/v1/models", headers=_auth())
