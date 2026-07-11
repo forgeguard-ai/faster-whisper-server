@@ -8,6 +8,13 @@ the single source of truth for the release version.
 Per-PR detail is published automatically on each GitHub release page; this file
 is the curated summary.
 
+## [1.0.2]
+
+### Fixed
+- Web console: accessing `/web` without a trailing slash now redirects to `/web/`,
+  so the SPA's relative asset URLs resolve instead of 404-ing against the site root.
+- Web console header title now reads "ForgeGuard Faster Whisper Server".
+
 ## [1.0.1]
 
 First ForgeGuard release: a container-native, OpenAI-compatible speech-to-text

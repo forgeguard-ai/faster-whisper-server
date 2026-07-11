@@ -190,7 +190,7 @@ export default function App() {
 
   return (
     <AppShell
-      title="ForgeGuard Faster Whisper"
+      title="ForgeGuard Faster Whisper Server"
       tagline="Speech-to-text console"
       mark={<MicIcon />}
       version={version}
