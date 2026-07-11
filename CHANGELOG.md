@@ -8,7 +8,7 @@ the single source of truth for the release version.
 Per-PR detail is published automatically on each GitHub release page; this file
 is the curated summary.
 
-## [1.0.0]
+## [1.0.1]
 
 First ForgeGuard release: a container-native, OpenAI-compatible speech-to-text
 server built on faster-whisper, distributed as container images and a Helm chart
