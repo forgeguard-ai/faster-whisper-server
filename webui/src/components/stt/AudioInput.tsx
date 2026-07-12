@@ -44,6 +44,7 @@ export function AudioInput({
 }) {
   const [dragging, setDragging] = useState(false)
   const [recording, setRecording] = useState(false)
+  const [acquiring, setAcquiring] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   // getUserMedia is only available in a secure context (HTTPS or http://localhost).
   const recordingSupported =
@@ -77,18 +78,20 @@ export function AudioInput({
   )
 
   const startRecording = useCallback(async () => {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      // navigator.mediaDevices is only exposed in a secure context (HTTPS or
-      // http://localhost), so an insecure LAN origin fails here in every browser.
-      onError?.(
-        window.isSecureContext
-          ? 'Recording is not supported in this browser.'
-          : 'Microphone recording needs a secure context — open the console over HTTPS or http://localhost. File upload works on any origin.',
-      )
+    // The button is disabled when unsupported; the hint paragraph below is the
+    // single copy of the secure-context explanation.
+    if (!recordingSupported) return
+    if (recorderRef.current || recording || acquiring) return
+    setAcquiring(true)
+    let stream: MediaStream | null = null
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    } catch {
+      setAcquiring(false)
+      onError?.('Microphone access was denied.')
       return
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
       const recorder = new MediaRecorder(stream)
       chunksRef.current = []
       recorder.ondataavailable = (e) => {
@@ -99,20 +102,24 @@ export function AudioInput({
         const blob = new Blob(chunksRef.current, { type })
         const ext = type.includes('ogg') ? 'ogg' : 'webm'
         select(blob, `recording-${Date.now()}.${ext}`)
-        stream.getTracks().forEach((t) => t.stop())
+        stream!.getTracks().forEach((t) => t.stop())
       }
       recorder.start()
       recorderRef.current = recorder
       setRecording(true)
       setElapsed(0)
+      if (timerRef.current) window.clearInterval(timerRef.current)
       timerRef.current = window.setInterval(
         () => setElapsed((e) => e + 1),
         1000,
       )
     } catch {
-      onError?.('Microphone access was denied.')
+      stream.getTracks().forEach((t) => t.stop())
+      onError?.('Recording could not be started in this browser.')
+    } finally {
+      setAcquiring(false)
     }
-  }, [select, onError])
+  }, [select, onError, recordingSupported, recording, acquiring])
 
   const stopRecording = useCallback(() => {
     recorderRef.current?.stop()
@@ -239,7 +246,7 @@ export function AudioInput({
             variant="secondary"
             fullWidth
             onClick={startRecording}
-            disabled={disabled || !recordingSupported}
+            disabled={disabled || !recordingSupported || acquiring}
           >
             <MicIcon className="text-[1.1rem]" />
             Record from microphone

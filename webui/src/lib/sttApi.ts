@@ -1,4 +1,4 @@
-import { api } from './apiClient'
+import { api, ApiError } from './apiClient'
 
 export type ResponseFormat = 'text' | 'json' | 'verbose_json'
 
@@ -38,9 +38,32 @@ export interface TranscribeParams {
   wordTimestamps?: boolean
 }
 
-/** POST a transcription/translation request as multipart form and normalize the result. */
+/** Mirror of apiClient's error parsing for the raw api.request path below. */
+async function parseError(res: Response): Promise<ApiError> {
+  let detail: unknown
+  let message = `Request failed (${res.status})`
+  try {
+    const data = await res.json()
+    detail = data
+    const d = (data as { detail?: unknown })?.detail
+    if (typeof d === 'string') message = d
+    else if (d && typeof d === 'object' && 'message' in d) {
+      message = String((d as { message: unknown }).message)
+    }
+  } catch {
+    /* non-JSON body — keep the generic message */
+  }
+  return new ApiError(message, res.status, detail)
+}
+
+/** POST a transcription/translation request as multipart form and normalize the result.
+ *
+ * Uses api.request (rather than postForm) so an AbortSignal can be threaded
+ * through for cancellation.
+ */
 export async function transcribe(
   params: TranscribeParams,
+  signal?: AbortSignal,
 ): Promise<TranscriptionResult> {
   const task: Task = params.task ?? 'transcribe'
   // OpenAI's translation endpoint always targets English and takes no source
@@ -63,12 +86,15 @@ export async function transcribe(
     form.append('timestamp_granularities[]', 'word')
   }
 
+  const res = await api.request(endpoint, { method: 'POST', body: form, signal })
+  if (!res.ok) throw await parseError(res)
+
   if (params.responseFormat === 'text') {
-    const text = await api.postFormText(endpoint, form)
+    const text = await res.text()
     return { text: text.trim(), raw: text }
   }
 
-  const data = await api.postForm<Record<string, unknown>>(endpoint, form)
+  const data = (await res.json()) as Record<string, unknown>
   return {
     text: String((data.text as string) ?? ''),
     language: data.language as string | undefined,

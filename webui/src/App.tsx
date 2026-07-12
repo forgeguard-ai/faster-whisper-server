@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { AppShell } from './components/AppShell'
 import { SettingsDialog } from './components/SettingsDialog'
 import {
@@ -61,7 +61,13 @@ export default function App() {
   const [wordTimestamps, setWordTimestamps] = useState(true)
 
   const [transcribing, setTranscribing] = useState(false)
+  // Task captured when the in-flight request started (the selector can change
+  // mid-request); drives the button label and completion/failure toasts.
+  const [inFlightTask, setInFlightTask] = useState<Task | null>(null)
   const [result, setResult] = useState<TranscriptionResult | null>(null)
+  // Server upload cap from /web/config (0 = disabled) for a client-side preflight.
+  const [maxUploadBytes, setMaxUploadBytes] = useState(0)
+  const abortRef = useRef<AbortController | null>(null)
 
   // Authorized data load: doubles as the model-chip source and the signal that
   // a valid key (or open API) is in effect — clears the auth-required state.
@@ -87,11 +93,26 @@ export default function App() {
 
   useEffect(() => {
     let alive = true
-    api.init().then(() => {
+    api.init().then(async () => {
       if (!alive) return
       setVersion(api.getVersion())
       setReady(true)
       void loadModel()
+      // The shared apiClient bootstrap only stores root_path/version, so read
+      // the upload cap from /web/config directly.
+      try {
+        const res = await fetch(`${api.getRootPath()}/web/config`, {
+          headers: { Accept: 'application/json' },
+        })
+        if (res.ok) {
+          const cfg = (await res.json()) as { max_upload_bytes?: number }
+          if (alive && typeof cfg.max_upload_bytes === 'number') {
+            setMaxUploadBytes(cfg.max_upload_bytes)
+          }
+        }
+      } catch {
+        /* no config endpoint — skip the preflight */
+      }
     })
     return () => {
       alive = false
@@ -100,27 +121,27 @@ export default function App() {
 
   // Track model warmup: poll /health until it reports healthy. Re-armed by
   // setting serverStatus back to 'warming' (e.g. on a model_warming 503).
+  // 'failed' is NOT terminal: keep polling (slower) so a restarted/recovered
+  // server flips the UI back to healthy without a manual refresh.
   useEffect(() => {
-    if (serverStatus === 'healthy' || serverStatus === 'failed') return
+    if (serverStatus === 'healthy') return
     let alive = true
     let timer: number | undefined
     const poll = async () => {
       const { status, error } = await fetchServerStatus()
       if (!alive) return
       if (status === 'healthy') {
-        if (serverStatus === 'warming') {
-          toast.success('Model ready', 'Warmup complete.')
+        if (serverStatus === 'warming' || serverStatus === 'failed') {
+          toast.success('Model ready', 'The server is healthy again.')
         }
         setServerStatus('healthy')
         return
       }
-      if (status === 'failed') {
-        setServerStatus('failed')
+      if (status === 'failed' && serverStatus !== 'failed') {
         toast.error('Model failed to load', error ?? 'Check the server logs.')
-        return
       }
-      setServerStatus(status) // 'warming' | 'unreachable'
-      timer = window.setTimeout(poll, 3000)
+      setServerStatus(status) // 'warming' | 'unreachable' | 'failed'
+      timer = window.setTimeout(poll, status === 'failed' ? 10000 : 3000)
     }
     void poll()
     return () => {
@@ -151,21 +172,42 @@ export default function App() {
 
   const onRun = async () => {
     if (!canRun || !selection) return
+    if (maxUploadBytes > 0 && selection.blob.size > maxUploadBytes) {
+      toast.error(
+        'File too large',
+        `The server accepts up to ${(maxUploadBytes / (1024 * 1024)).toFixed(0)} MB per upload.`,
+      )
+      return
+    }
+    const requestTask = task // capture: the selector can change mid-request
+    const controller = new AbortController()
+    abortRef.current = controller
+    setInFlightTask(requestTask)
     setTranscribing(true)
     try {
-      const res = await transcribe({
-        file: selection.blob,
-        filename: selection.filename,
-        task,
-        language: task === 'transcribe' ? language || undefined : undefined,
-        responseFormat: format,
-        wordTimestamps,
-      })
+      const res = await transcribe(
+        {
+          file: selection.blob,
+          filename: selection.filename,
+          task: requestTask,
+          language:
+            requestTask === 'transcribe' ? language || undefined : undefined,
+          responseFormat: format,
+          wordTimestamps,
+        },
+        controller.signal,
+      )
       setResult(res)
       toast.success(
-        task === 'translate' ? 'Translation complete' : 'Transcription complete',
+        requestTask === 'translate'
+          ? 'Translation complete'
+          : 'Transcription complete',
       )
     } catch (err) {
+      if (controller.signal.aborted) {
+        toast.info('Cancelled')
+        return
+      }
       if (err instanceof ApiError && err.status === 401) return
       if (
         err instanceof ApiError &&
@@ -178,15 +220,23 @@ export default function App() {
         return
       }
       toast.error(
-        task === 'translate' ? 'Translation failed' : 'Transcription failed',
+        requestTask === 'translate' ? 'Translation failed' : 'Transcription failed',
         err instanceof Error ? err.message : String(err),
       )
     } finally {
+      abortRef.current = null
+      setInFlightTask(null)
       setTranscribing(false)
     }
   }
 
-  const verb = task === 'translate' ? 'Translate' : 'Transcribe'
+  const onCancel = () => {
+    abortRef.current?.abort()
+  }
+
+  const verb =
+    (inFlightTask ?? task) === 'translate' ? 'Translate' : 'Transcribe'
+  const wordsEnabled = format === 'verbose_json' && task === 'transcribe'
 
   return (
     <AppShell
@@ -218,7 +268,8 @@ export default function App() {
         >
           <span className="font-medium">The speech model failed to load.</span>{' '}
           <span className="text-muted">
-            Check the server logs — the container usually restarts on its own.
+            Check the server logs — this console keeps watching and recovers
+            automatically once the server is healthy again.
           </span>
         </div>
       )}
@@ -247,6 +298,11 @@ export default function App() {
                 >
                   {transcribing ? `${verb.slice(0, -1)}ing…` : verb}
                 </Button>
+                {transcribing && (
+                  <Button size="lg" variant="secondary" onClick={onCancel}>
+                    Cancel
+                  </Button>
+                )}
                 {authRequired && (
                   <Button
                     size="lg"
@@ -344,18 +400,14 @@ export default function App() {
                 )}
               </Field>
               <label
-                className={cnWordRow(format, task)}
-                aria-disabled={format !== 'verbose_json' || task === 'translate'}
+                className={cnWordRow(wordsEnabled)}
+                aria-disabled={!wordsEnabled}
               >
                 <input
                   type="checkbox"
                   className="h-4 w-4 shrink-0 rounded border-border-strong text-accent accent-accent focus-visible:ring-2 focus-visible:ring-accent/60"
-                  checked={
-                    wordTimestamps &&
-                    format === 'verbose_json' &&
-                    task === 'transcribe'
-                  }
-                  disabled={format !== 'verbose_json' || task === 'translate'}
+                  checked={wordTimestamps && wordsEnabled}
+                  disabled={!wordsEnabled}
                   onChange={(e) => setWordTimestamps(e.target.checked)}
                 />
                 <span>
@@ -385,8 +437,7 @@ export default function App() {
   )
 }
 
-function cnWordRow(format: ResponseFormat, task: Task): string {
-  const enabled = format === 'verbose_json' && task === 'transcribe'
+function cnWordRow(enabled: boolean): string {
   return [
     'flex items-start gap-3 rounded-lg border border-border bg-surface-2/40 p-3 transition-opacity',
     enabled ? 'cursor-pointer' : 'cursor-not-allowed opacity-60',

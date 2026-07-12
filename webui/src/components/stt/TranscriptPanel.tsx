@@ -7,12 +7,20 @@ import {
   DownloadIcon,
   cn,
 } from '../../ui'
-import { toSrt, toVtt, type TranscriptionResult } from '../../lib/sttApi'
+import {
+  toSrt,
+  toVtt,
+  type Segment,
+  type TranscriptionResult,
+  type Word,
+} from '../../lib/sttApi'
 
 function ts(s: number): string {
-  const m = Math.floor(s / 60)
-  const sec = (s % 60).toFixed(1).padStart(4, '0')
-  return `${m}:${sec}`
+  // Round to deciseconds first so e.g. 59.97s renders 1:00.0, never 0:60.0.
+  const ds = Math.round(s * 10)
+  const m = Math.floor(ds / 600)
+  const rem = (ds % 600) / 10
+  return `${m}:${rem < 10 ? '0' : ''}${rem.toFixed(1)}`
 }
 
 function download(filename: string, text: string, mime: string): void {
@@ -20,8 +28,17 @@ function download(filename: string, text: string, mime: string): void {
   const a = document.createElement('a')
   a.href = url
   a.download = filename
+  document.body.appendChild(a)
   a.click()
-  URL.revokeObjectURL(url)
+  document.body.removeChild(a)
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+/** Words belonging to a segment, from the flattened top-level `words` list
+ * (segments no longer carry per-word entries, matching OpenAI). */
+function wordsForSegment(words: Word[] | undefined, seg: Segment): Word[] {
+  if (!words?.length) return []
+  return words.filter((w) => w.start >= seg.start && w.start < seg.end)
 }
 
 export function TranscriptPanel({
@@ -148,29 +165,32 @@ export function TranscriptPanel({
         </div>
       ) : (
         <div className="max-h-[26rem] space-y-1.5 overflow-auto rounded-xl border border-border bg-surface-2/50 p-3">
-          {result.segments!.map((seg) => (
-            <div
-              key={seg.id}
-              className="flex gap-3 rounded-lg px-2 py-1.5 hover:bg-surface"
-            >
-              <span className="shrink-0 pt-0.5 font-mono text-[0.7rem] tabular-nums text-faint">
-                {ts(seg.start)}
-              </span>
-              <p className="text-sm leading-relaxed text-fg">
-                {seg.words && seg.words.length > 0
-                  ? seg.words.map((w, i) => (
-                      <span
-                        key={i}
-                        title={`${w.start.toFixed(2)}s – ${w.end.toFixed(2)}s · p=${w.probability.toFixed(2)}`}
-                        className="rounded px-0.5 hover:bg-accent-soft hover:text-accent"
-                      >
-                        {w.word}
-                      </span>
-                    ))
-                  : seg.text}
-              </p>
-            </div>
-          ))}
+          {result.segments!.map((seg) => {
+            const segWords = wordsForSegment(result.words, seg)
+            return (
+              <div
+                key={seg.id}
+                className="flex gap-3 rounded-lg px-2 py-1.5 hover:bg-surface"
+              >
+                <span className="shrink-0 pt-0.5 font-mono text-[0.7rem] tabular-nums text-faint">
+                  {ts(seg.start)}
+                </span>
+                <p className="text-sm leading-relaxed text-fg">
+                  {segWords.length > 0
+                    ? segWords.map((w, i) => (
+                        <span
+                          key={i}
+                          title={`${w.start.toFixed(2)}s – ${w.end.toFixed(2)}s · p=${w.probability.toFixed(2)}`}
+                          className="rounded px-0.5 hover:bg-accent-soft hover:text-accent"
+                        >
+                          {w.word}
+                        </span>
+                      ))
+                    : seg.text}
+                </p>
+              </div>
+            )
+          })}
         </div>
       )}
 
