@@ -9,6 +9,8 @@ fasterWhisper:
   # Defaults to the chart appVersion (a pinned release) when empty.
   tag: ""
   pullPolicy: IfNotPresent
+  # Container listen port: passed to uvicorn via the deployment's args and
+  # advertised as containerPort.
   port: 8000
 
   # Optional bearer-token auth. When enabled, the API_KEY env var is injected

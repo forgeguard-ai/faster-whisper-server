@@ -33,6 +33,15 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.fasterWhisper.repository }}:{{ .Values.fasterWhisper.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.fasterWhisper.pullPolicy }}
+          # Override the image CMD so uvicorn listens on the configured port
+          # (which containerPort below advertises).
+          command: ["uvicorn"]
+          args:
+            - "server.main:app"
+            - "--host"
+            - "0.0.0.0"
+            - "--port"
+            - {{ .Values.fasterWhisper.port | default 8000 | quote }}
           env:
             - name: PYTHONUNBUFFERED
               value: "1"
