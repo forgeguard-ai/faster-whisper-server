@@ -7,7 +7,8 @@
 **ForgeGuard Faster Whisper Server** is a container-native, OpenAI-compatible
 speech-to-text server built on
 [faster-whisper](https://github.com/SYSTRAN/faster-whisper) and
-[CTranslate2](https://github.com/OpenNMT/CTranslate2). Forked from
+[CTranslate2](https://github.com/OpenNMT/CTranslate2). An independent
+ForgeGuard AI server originally derived from
 [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 (see [Attribution](#license--attribution)).
 
@@ -27,14 +28,14 @@ bare-metal install path.
 
 | Hardware | Image |
 |---|---|
-| NVIDIA RTX 3000 → 5000 series (x86_64, CUDA cu128) | `ghcr.io/forgeguard/faster-whisper-server:latest` (alias: `faster-whisper-server-cu128`, bakes `large-v3`) |
-| NVIDIA Jetson Orin (arm64, JetPack 6) | `ghcr.io/forgeguard/faster-whisper-server-jetson:latest` (bakes `small`) |
+| NVIDIA RTX 3000 → 5000 series (x86_64, CUDA cu128) | `ghcr.io/forgeguard-ai/faster-whisper-server:latest` (alias: `faster-whisper-server-cu128`, bakes `large-v3`) |
+| NVIDIA Jetson Orin (arm64, JetPack 6) | `ghcr.io/forgeguard-ai/faster-whisper-server-jetson:latest` (bakes `small`) |
 | AMD (ROCm), Intel | planned — see [Roadmap](#roadmap) |
 
-`:latest` works, but pin a release tag (e.g. `:1.0.3`) for stable deployments.
+`:latest` works, but pin a release tag (e.g. `:1.1.0`) for stable deployments.
 
 <div align="center">
-  <img src="assets/forgeguard-faster-whisper-server-web-ui.png" width="85%" alt="ForgeGuard Faster Whisper Server web console">
+  <img src="assets/forgeguard-faster-whisper-server-web-ui.png" width="100%" alt="ForgeGuard Faster Whisper Server web console">
 </div>
 
 ## Quick start
@@ -42,11 +43,11 @@ bare-metal install path.
 ```bash
 # NVIDIA amd64 (RTX 3000 through RTX 5000)
 docker run -d --name whisper --gpus all -p 8000:8000 \
-  ghcr.io/forgeguard/faster-whisper-server:latest
+  ghcr.io/forgeguard-ai/faster-whisper-server:latest
 
 # NVIDIA Jetson (arm64, Orin)
 docker run -d --name whisper --runtime nvidia -p 8000:8000 \
-  ghcr.io/forgeguard/faster-whisper-server-jetson:latest
+  ghcr.io/forgeguard-ai/faster-whisper-server-jetson:latest
 ```
 
 Then:
@@ -82,7 +83,7 @@ requires `Authorization: Bearer <key>`:
 
 ```bash
 docker run -d --gpus all -p 8000:8000 -e API_KEY=change-me \
-  ghcr.io/forgeguard/faster-whisper-server:latest
+  ghcr.io/forgeguard-ai/faster-whisper-server:latest
 
 curl -H 'Authorization: Bearer change-me' http://localhost:8000/v1/models
 ```
@@ -129,6 +130,44 @@ for the full list):
 | `ENABLE_WEB_UI` | `true` | Serve the web console at `/web` |
 | `MODEL_DIR` | `/app/models` | Directory of baked models (`<MODEL_DIR>/<MODEL_SIZE>`) |
 | `MODEL_REVISION` | pinned for canonical Systran repos | Hugging Face git revision for hub downloads |
+| `DATA_DIR` | `/data` | Writable state dir: TLS cert/key + persisted active-model choice |
+| `MAX_CONCURRENCY` | `1` | Active transcriptions at once (feeds the `/system` activity meter) |
+| `QUEUE_SIZE` | `32` | Max requests waiting for a slot before shedding with 503 |
+| `LOG_INPUT_TEXT` | `false` | Log transcript text — **keep off**; transcripts are PII |
+| `PERSIST_AUDIO` | `false` | Never keep uploaded audio beyond the request |
+| `TLS_ENABLED` | `false` | Serve HTTPS directly (uvicorn SSL) — see below |
+| `TLS_SELF_SIGNED` | `true` | Auto-generate a self-signed cert on first run if none supplied |
+| `TLS_CERT_FILE` / `TLS_KEY_FILE` | `<DATA_DIR>/tls/...` | Provide your own cert/key instead |
+| `TLS_CN` / `TLS_SAN` | `localhost` / *(none)* | CN and extra SANs for the generated cert |
+
+See [`.env.example`](.env.example) for the complete, annotated list.
+
+### Built-in HTTPS
+
+Set `TLS_ENABLED=true` and the server speaks HTTPS directly — no reverse proxy,
+no manual `openssl`. When no cert is supplied it generates a self-signed one on
+first run (RSA 2048, SANs for the CN plus `localhost`/`127.0.0.1`/`::1`, ~10y
+validity), persists it under `<DATA_DIR>/tls` with the key at mode `0600`, and
+reuses it on every restart. Browsers warn on the self-signed cert (expected);
+point `TLS_CERT_FILE`/`TLS_KEY_FILE` at a real cert for anything public.
+
+The [`deploy/docker-compose.local.yml`](deploy/docker-compose.local.yml) stack
+brings this up on a single local GPU with HTTPS on `https://localhost:8443/web`.
+
+### Live GPU telemetry & the model picker
+
+`GET /system` returns live GPU utilization/VRAM/temperature/power (best-effort
+via NVML) plus in-flight/queued request counts. The web console renders a compact
+monitor from it and a model-size picker: switch the resident Whisper model
+(`tiny` … `large-v3`, `large-v3-turbo`, `distil-*`) at runtime with
+`POST /api/model/activate` (auth-guarded); the choice persists to
+`<DATA_DIR>/active_model` and resumes on restart. Sizes not baked into the image
+download on first activation; bake extras at build time with
+`--build-arg EXTRA_MODELS="large-v3-turbo"`.
+
+See [docs/security.md](docs/security.md) and
+[docs/responsible-use.md](docs/responsible-use.md) for data-handling and privacy
+guidance (transcripts are sensitive PII).
 
 ## API overview
 
@@ -199,7 +238,7 @@ response-format selection, a model-warming banner, transcript copy and download
 ## Kubernetes (Helm)
 
 ```bash
-helm install whisper oci://ghcr.io/forgeguard/charts/faster-whisper-server --version 1.0.3
+helm install whisper oci://ghcr.io/forgeguard-ai/charts/faster-whisper-server --version 1.1.0
 ```
 
 The chart (also in [`charts/faster-whisper-server`](charts/faster-whisper-server))
@@ -279,7 +318,7 @@ volume over `/app/models` — that would shadow the baked weights.
 This repository is licensed under the [MIT License](LICENSE); see
 [NOTICE](NOTICE) for required attributions.
 
-- Forked from [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+- Originally derived from [SYSTRAN/faster-whisper](https://github.com/SYSTRAN/faster-whisper)
   (MIT) — the inference library this server builds on.
 - [OpenAI Whisper](https://github.com/openai/whisper) model weights (MIT), as
   converted to CTranslate2 format by [Systran](https://huggingface.co/Systran).

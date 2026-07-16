@@ -4,7 +4,7 @@
 fasterWhisper:
   replicaCount: 1
   # The name of the deployment repository (unsuffixed alias; the amd64 image).
-  repository: "ghcr.io/forgeguard/faster-whisper-server"
+  repository: "ghcr.io/forgeguard-ai/faster-whisper-server"
   imagePullSecrets: [] # Set if using a private image or getting rate limited
   # Defaults to the chart appVersion (a pinned release) when empty.
   tag: ""
@@ -70,16 +70,23 @@ serviceAccount:
 
 podAnnotations: {}
 
-podSecurityContext: {}
-  # fsGroup: 2000
+# Container hardening defaults. The image runs as the non-root `appuser` (uid
+# 1000); these enforce that at the pod/container level and drop all Linux
+# capabilities. fsGroup lets the non-root process write any mounted volume.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
 
-securityContext: {}
-  # capabilities:
-  #   drop:
-  #   - ALL
-  # readOnlyRootFilesystem: true
-  # runAsNonRoot: true
-  # runAsUser: 1000
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  # readOnlyRootFilesystem: true   # compatible if /tmp, the HF cache, and DATA_DIR
+                                    # are writable emptyDir/PVC mounts
 
 service:
   type: ClusterIP
