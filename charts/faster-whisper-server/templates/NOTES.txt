@@ -15,18 +15,69 @@ the background. Kubernetes probes are wired to the health contract:
 {{- else if contains "NodePort" .Values.service.type }}
   export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "faster-whisper-server.fullname" . }})
   export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
-  echo http://$NODE_IP:$NODE_PORT
+  echo http{{ if .Values.tls.enabled }}s{{ end }}://$NODE_IP:$NODE_PORT
 {{- else if contains "LoadBalancer" .Values.service.type }}
      NOTE: It may take a few minutes for the LoadBalancer IP to be available.
            You can watch the status of by running 'kubectl get --namespace {{ .Release.Namespace }} svc -w {{ include "faster-whisper-server.fullname" . }}'
   export SERVICE_IP=$(kubectl get svc --namespace {{ .Release.Namespace }} {{ include "faster-whisper-server.fullname" . }} --template "{{"{{ range (index .status.loadBalancer.ingress 0) }}{{.}}{{ end }}"}}")
-  echo http://$SERVICE_IP:{{ .Values.fasterWhisper.port }}
+  echo http{{ if .Values.tls.enabled }}s{{ end }}://$SERVICE_IP:{{ .Values.fasterWhisper.port }}
 {{- else if contains "ClusterIP" .Values.service.type }}
   export POD_NAME=$(kubectl get pods --namespace {{ .Release.Namespace }} -l "app.kubernetes.io/name={{ include "faster-whisper-server.name" . }},app.kubernetes.io/instance={{ .Release.Name }}" -o jsonpath="{.items[0].metadata.name}")
   export CONTAINER_PORT=$(kubectl get pod --namespace {{ .Release.Namespace }} $POD_NAME -o jsonpath="{.spec.containers[0].ports[0].containerPort}")
-  echo "Visit http://127.0.0.1:8000 to use your application"
-  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME 8000:$CONTAINER_PORT
+  echo "Visit http{{ if .Values.tls.enabled }}s{{ end }}://127.0.0.1:{{ .Values.fasterWhisper.port }} to use your application"
+  kubectl --namespace {{ .Release.Namespace }} port-forward $POD_NAME {{ .Values.fasterWhisper.port }}:$CONTAINER_PORT
 {{- end }}
 
-2. The OpenAI-compatible API lives under /v1 (e.g. POST /v1/audio/transcriptions)
-   and the web console at /web.
+2. The OpenAI-compatible API lives under /v1 (e.g. POST /v1/audio/transcriptions),
+   the web console at /web, and live GPU + activity telemetry at /system (JSON,
+   unauthenticated like /health). /system is not Prometheus exposition format,
+   so this chart ships no ServiceMonitor — scraping it needs a collector that
+   can read JSON.
+
+{{- if and .Values.tls.enabled (not .Values.persistence.enabled) (not .Values.tls.existingSecret) }}
+
+WARNING: tls.enabled is on, persistence.enabled is off, and no certificate was
+supplied. The self-signed certificate is written under DATA_DIR, so it is
+regenerated on every restart and every client sees a new fingerprint. Enable
+persistence, or supply a certificate through tls.existingSecret.
+{{- end }}
+
+{{- if not .Values.persistence.enabled }}
+
+NOTE: persistence is off, so the model chosen through runtime model switching
+is forgotten on restart — the pod comes back on MODEL_SIZE.
+{{- end }}
+
+{{- if not .Values.hfCache.enabled }}
+
+NOTE: hfCache is off. Switching to a model that was not baked into the image
+re-downloads it on every pod start. Enable hfCache to keep those downloads.
+{{- end }}
+
+{{- if and .Values.tls.enabled .Values.ingress.enabled }}
+
+NOTE: the pod serves HTTPS and an Ingress fronts it. The ingress controller
+must be told the backend speaks TLS, or it will send plaintext to an SSL
+listener. For ingress-nginx, add to ingress.annotations:
+  nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+{{- end }}
+
+{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.ingress) }}
+
+WARNING: networkPolicy.enabled is on with no ingress rules, so nothing may
+reach this service — the Ingress controller included. Add a rule under
+networkPolicy.ingress, or turn the policy off.
+{{- end }}
+
+{{- if and .Values.networkPolicy.enabled (not .Values.networkPolicy.egress) }}
+
+NOTE: networkPolicy is on with no egress rules beyond DNS. Runtime model
+switching downloads from the Hugging Face hub and will hang without an egress
+rule permitting it.
+{{- end }}
+
+{{- if not .Values.gpu.enabled }}
+
+NOTE: gpu.enabled is false — DEVICE=cpu and no accelerator is requested. This
+is usable for the smaller model sizes; consider COMPUTE_TYPE=int8 via extraEnv.
+{{- end }}

@@ -1,0 +1,67 @@
+{{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) -}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-data" (include "faster-whisper-server.fullname" .) }}
+  labels:
+    {{- include "faster-whisper-server.labels" . | nindent 4 }}
+  {{- if or .Values.persistence.annotations .Values.persistence.retain }}
+  annotations:
+    {{- with .Values.persistence.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.persistence.retain }}
+    "helm.sh/resource-policy": keep
+    {{- end }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size | quote }}
+  {{- if .Values.persistence.storageClass }}
+  {{- if eq .Values.persistence.storageClass "-" }}
+  # "-" is the documented way to ask for no class at all (a pre-provisioned
+  # PV), which is different from leaving it empty (the cluster default).
+  storageClassName: ""
+  {{- else }}
+  storageClassName: {{ .Values.persistence.storageClass | quote }}
+  {{- end }}
+  {{- end }}
+{{- end }}
+---
+{{- if and .Values.hfCache.enabled (not .Values.hfCache.existingClaim) -}}
+{{/*
+The model-download cache. Separate from the data claim on purpose: gigabytes
+and disposable, against a couple of small files worth keeping.
+*/}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-hf-cache" (include "faster-whisper-server.fullname" .) }}
+  labels:
+    {{- include "faster-whisper-server.labels" . | nindent 4 }}
+  {{- if or .Values.hfCache.annotations .Values.hfCache.retain }}
+  annotations:
+    {{- with .Values.hfCache.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+    {{- if .Values.hfCache.retain }}
+    "helm.sh/resource-policy": keep
+    {{- end }}
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.hfCache.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.hfCache.size | quote }}
+  {{- if .Values.hfCache.storageClass }}
+  {{- if eq .Values.hfCache.storageClass "-" }}
+  storageClassName: ""
+  {{- else }}
+  storageClassName: {{ .Values.hfCache.storageClass | quote }}
+  {{- end }}
+  {{- end }}
+{{- end }}

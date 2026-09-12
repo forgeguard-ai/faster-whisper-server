@@ -9,33 +9,48 @@ fasterWhisper:
   # Defaults to the chart appVersion (a pinned release) when empty.
   tag: ""
   pullPolicy: IfNotPresent
-  # Container listen port: passed to uvicorn via the deployment's args and
-  # advertised as containerPort.
+  # Container listen port, exported to the server as PORT and advertised as
+  # containerPort.
   port: 8000
 
   # Optional bearer-token auth. When enabled, the API_KEY env var is injected
-  # from an existing Secret and clients must send `Authorization: Bearer <key>`
-  # on API routes (/health, /ready, and the web console stay open).
+  # and clients must send `Authorization: Bearer <key>` on API routes and on
+  # the model-switch endpoint (/health, /ready, /system, and the web console
+  # stay open).
+  #
+  # Supply the key one of two ways:
+  #   existingSecret — you manage the Secret (recommended for GitOps, where a
+  #                    literal in values would be committed)
+  #   value          — the chart creates the Secret for you
+  # Setting both is refused rather than silently preferring one.
   apiKey:
     enabled: false
     existingSecret: ""   # name of the Secret holding the key
     secretKey: "api-key" # key within that Secret
+    value: ""            # chart-created Secret; mutually exclusive with existingSecret
 
   # Extra environment variables for the container (name/value pairs).
   # e.g. MODEL_SIZE, COMPUTE_TYPE, BEAM_SIZE, DEFAULT_LANGUAGE — see the README.
+  # Rendered AFTER the values-derived variables, so an entry here overrides one
+  # this chart sets (the GPU and TLS blocks below).
   extraEnv: []
   #  - name: COMPUTE_TYPE
   #    value: int8_float16
 
-  resources:
-    limits:
-      nvidia.com/gpu: 1
-    requests:
-      nvidia.com/gpu: 1
+  # CPU/memory requests and limits. The GPU request is NOT written here — see
+  # the `gpu` block below, which owns the accelerator resource so the key is
+  # configurable and can be switched off wholesale.
+  resources: {}
+  #  limits:
+  #    memory: 8Gi
+  #  requests:
+  #    cpu: 500m
+  #    memory: 4Gi
 
   # Probes wired to the server's health contract:
   #   /health -> 200 as soon as the process serves (also during model warmup)
   #   /ready  -> 200 only once the model is warmed and inference will succeed
+  # `scheme: HTTPS` is added automatically when tls.enabled is true.
   probes:
     startup:
       httpGet:
@@ -59,6 +74,101 @@ fasterWhisper:
 nameOverride: ""
 fullnameOverride: ""
 
+# --- GPU -------------------------------------------------------------------
+# The accelerator request, kept out of `resources` so the resource KEY is a
+# value rather than a literal. `nvidia.com/gpu` is what the NVIDIA device
+# plugin advertises; other stacks advertise their own.
+#
+# Setting enabled: false also sets DEVICE=cpu. Whisper on CPU is genuinely
+# usable for the smaller model sizes; pair it with a COMPUTE_TYPE such as
+# int8 through extraEnv.
+gpu:
+  enabled: true
+  resourceKey: nvidia.com/gpu
+  count: 1
+
+# The RuntimeClass the pod runs under. Required on clusters where the NVIDIA
+# container runtime is not the default: the GPU Operator's own operands run
+# under this, k3s creates it when it detects the toolkit, and without it the
+# container starts with no visible card even though the scheduler placed it on
+# a GPU node. Leave empty where the default runtime is already GPU-capable.
+runtimeClassName: ""
+
+# --- TLS -------------------------------------------------------------------
+# The server speaks HTTPS itself (uvicorn SSL) — no sidecar, no reverse proxy.
+# With no certificate supplied it generates a self-signed one on first start
+# and persists it under <DATA_DIR>/tls, so enable `persistence` too or every
+# restart mints a new certificate and every client sees a new fingerprint.
+#
+# Terminating TLS at an Ingress instead? Leave this off. If you enable BOTH,
+# the ingress controller must be told the backend speaks HTTPS — for
+# ingress-nginx that is:
+#   nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+# in ingress.annotations below.
+tls:
+  enabled: false
+  # Generate a self-signed certificate when none is supplied. With this false
+  # and no certificate present the server exits rather than silently serving
+  # plaintext.
+  selfSigned: true
+  # CN and extra SANs for the generated certificate. Set cn to the name
+  # clients actually use, or they will reject it however valid it is.
+  cn: ""
+  san: []
+  # Mount a real certificate from an existing Secret (a cert-manager
+  # Certificate's secret works as-is). Takes precedence over self-signing.
+  existingSecret: ""
+  certSecretKey: tls.crt
+  keySecretKey: tls.key
+  # Explicit paths, for a certificate you mount yourself through
+  # extraVolumes/extraVolumeMounts. Empty means "under the data directory".
+  certFile: ""
+  keyFile: ""
+
+# --- Persistence -----------------------------------------------------------
+# The data directory, mounted at mountPath and exported as DATA_DIR. It holds
+# the self-signed TLS certificate and key, and the active-model choice that
+# runtime model switching writes — so without it, a restart both re-mints the
+# certificate and forgets which model you selected.
+#
+# Small by design: model weights do not live here. See `hfCache` below.
+persistence:
+  enabled: false
+  existingClaim: ""
+  mountPath: /data
+  size: 2Gi
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  annotations: {}
+  # Keep the PVC when the release is uninstalled. Helm's resource policy is
+  # all-or-nothing per object, so this is the only lever.
+  retain: false
+
+# --- Hugging Face cache ----------------------------------------------------
+# A SECOND volume, and the reason it exists: runtime model switching downloads
+# whichever Whisper size you pick that was not baked into the image. Those
+# downloads land in the Hugging Face cache, are gigabytes, and are re-fetched
+# on every pod start without a volume to keep them in.
+#
+# It is deliberately not the same claim as `persistence`: one is a couple of
+# small files you want to keep, the other is a large disposable cache, and they
+# want different sizes and different retention.
+#
+# NEVER mount anything over MODEL_DIR (/app/models). That path holds the
+# weights baked into the image at build time, and a volume mounted there
+# shadows them — the server then re-downloads a model it already had.
+hfCache:
+  enabled: false
+  existingClaim: ""
+  mountPath: /home/appuser/.cache/huggingface
+  size: 20Gi
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  annotations: {}
+  retain: false
+
 serviceAccount:
   # Specifies whether a service account should be created
   create: true
@@ -69,6 +179,7 @@ serviceAccount:
   name: ""
 
 podAnnotations: {}
+podLabels: {}
 
 # Container hardening defaults. The image runs as the non-root `appuser` (uid
 # 1000); these enforce that at the pod/container level and drop all Linux
@@ -90,6 +201,7 @@ securityContext:
 
 service:
   type: ClusterIP
+  annotations: {}
 
 ingress:
   enabled: false
@@ -97,6 +209,10 @@ ingress:
   annotations: {}
     # cert-manager.io/cluster-issuer: letsencrypt-prod
     # external-dns.alpha.kubernetes.io/hostname: whisper.example.com
+    # Required when tls.enabled is true — the backend speaks HTTPS:
+    # nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    # Audio uploads are larger than the default body limit:
+    # nginx.ingress.kubernetes.io/proxy-body-size: "25m"
   hosts:
     - host: whisper.example.com
       paths:
@@ -115,8 +231,41 @@ autoscaling:
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
 
+# A single-replica GPU service gets evicted by any node drain. A PDB does not
+# prevent that — nothing can, with one replica — but it makes the drain block
+# and say so, instead of taking the service away silently.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: ""
+  maxUnavailable: ""
+
+# Deny-by-default network posture. Only rendered when enabled, because a
+# NetworkPolicy on a cluster whose CNI does not enforce them is worse than
+# none: it reads as protection and is not.
+#
+# Note that runtime model switching needs egress to the Hugging Face hub. A
+# policy with no matching egress rule turns a model switch into a hang.
+networkPolicy:
+  enabled: false
+  ingress: []
+  #  - from:
+  #      - namespaceSelector:
+  #          matchLabels:
+  #            kubernetes.io/metadata.name: ingress-nginx
+  egress: []
+  allowDNS: true
+
+priorityClassName: ""
+topologySpreadConstraints: []
+terminationGracePeriodSeconds: 30
+
 nodeSelector: {}
 
 tolerations: []
 
 affinity: {}
+
+# Escape hatches for anything this chart does not model: a mounted CA bundle, a
+# vendor's device configuration, an extra cache volume.
+extraVolumes: []
+extraVolumeMounts: []

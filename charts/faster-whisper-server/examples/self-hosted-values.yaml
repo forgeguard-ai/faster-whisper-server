@@ -1,0 +1,108 @@
+# Self-hosted cluster with a preinstalled NVIDIA driver and container toolkit.
+#
+# This is the shape most on-premises clusters actually run: the driver and the
+# container toolkit are installed on the host (by the distribution, by JetPack,
+# or by hand), and the GPU Operator is deployed with its driver and toolkit
+# components switched OFF so it contributes only the device plugin, node
+# feature discovery, validation and DCGM:
+#
+#   helm upgrade --install gpu-operator nvidia/gpu-operator \
+#     --namespace gpu-operator --create-namespace \
+#     --set driver.enabled=false \
+#     --set toolkit.enabled=false \
+#     --set operator.runtimeClass=nvidia
+#
+# k3s and RKE2 create the `nvidia` RuntimeClass themselves once they detect the
+# toolkit's runtime; on a stock kubeadm cluster you may have to create it.
+#
+# Three things below are easy to get wrong and expensive to diagnose:
+#
+#   runtimeClassName  Without it the pod is scheduled onto a GPU node and then
+#                     starts with no visible card, because the default runtime
+#                     is not the NVIDIA one. The server falls back to CPU.
+#
+#   persistence       The self-signed certificate and the active-model marker
+#                     live under DATA_DIR. Without a volume the certificate is
+#                     regenerated on every restart and the model you selected
+#                     through the console is forgotten.
+#
+#   hfCache           Runtime model switching downloads any size that was not
+#                     baked into the image. Without this volume that download
+#                     repeats on every pod start.
+
+fasterWhisper:
+  replicaCount: 1
+  pullPolicy: IfNotPresent
+  extraEnv:
+    - name: MODEL_SIZE
+      value: large-v3-turbo
+    - name: COMPUTE_TYPE
+      value: float16
+  resources:
+    requests:
+      cpu: 500m
+      memory: 4Gi
+    limits:
+      memory: 8Gi
+
+gpu:
+  enabled: true
+  resourceKey: nvidia.com/gpu
+  count: 1
+
+runtimeClassName: nvidia
+
+# The server speaks HTTPS itself — no reverse proxy, no sidecar. Swap in a real
+# certificate with tls.existingSecret when clients should not have to trust a
+# self-signed one.
+tls:
+  enabled: true
+  selfSigned: true
+  cn: whisper.example.com
+  san:
+    - whisper.internal.example.com
+
+# Small: the TLS pair and a one-line marker naming the active model.
+persistence:
+  enabled: true
+  size: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  retain: true
+
+# Large and disposable: model weights pulled at runtime. Never point this at
+# /app/models — that path holds the weights baked into the image, and mounting
+# over it makes the server re-download a model it already had.
+hfCache:
+  enabled: true
+  size: 40Gi
+  accessModes:
+    - ReadWriteOnce
+  retain: true
+
+# Pin to the node holding the card. A GPU node pool that carries nothing else
+# is usually tainted, so the matching toleration goes here too.
+nodeSelector: {}
+#  kubernetes.io/hostname: gpu-node-1
+tolerations: []
+#  - key: nvidia.com/gpu
+#    operator: Exists
+#    effect: NoSchedule
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# The pod already serves HTTPS, so the Ingress must be told not to speak
+# plaintext to it. Audio uploads also exceed the default body limit.
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+    nginx.ingress.kubernetes.io/proxy-body-size: "25m"
+  hosts:
+    - host: whisper.example.com
+      paths:
+        - path: /
+          pathType: Prefix

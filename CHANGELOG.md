@@ -8,6 +8,73 @@ the single source of truth for the release version.
 Per-PR detail is published automatically on each GitHub release page; this file
 is the curated summary.
 
+## [1.2.0]
+
+**A Helm chart release: the server code is unchanged.** The version moves
+because this project versions as one thing — `VERSION` drives `pyproject.toml`
+and the chart alike, and the release workflow packages the chart with the
+project version — so a chart-only change still takes a minor bump.
+
+1.1.0 added HTTPS, GPU telemetry and runtime model switching to the server but
+never surfaced any of it in the chart, and in one case the chart actively
+prevented it. This closes that gap and adds the cluster machinery the chart was
+missing.
+
+#### Fixed
+- **TLS was silently impossible on Kubernetes.** The Deployment overrode the
+  image entrypoint with `command: ["uvicorn"]`, bypassing `python -m server` —
+  the wrapper whose one job is to generate and wire in the certificate. Setting
+  `TLS_ENABLED` through `extraEnv` therefore did nothing at all. The override is
+  gone; host and port now come from `HOST`/`PORT`, which is why it was never
+  needed.
+
+#### Added
+- **`tls`**: serve HTTPS from the pod (`TLS_ENABLED`, `TLS_SELF_SIGNED`,
+  `TLS_CN`, `TLS_SAN`, `TLS_CERT_FILE`, `TLS_KEY_FILE`). Supply a real
+  certificate with `tls.existingSecret` — a cert-manager Certificate's secret
+  works unchanged — or let the server self-sign. Probes gain `scheme: HTTPS`
+  automatically; without that, enabling TLS would leave every probe speaking
+  plaintext to an SSL listener and the pod would never go ready.
+- **`persistence`**: a PVC mounted at `persistence.mountPath` and exported as
+  `DATA_DIR`, holding the TLS pair and the active-model marker. Without it a
+  restart re-mints the certificate and forgets the model chosen through the
+  console.
+- **`hfCache`**: a second, separate PVC for the Hugging Face cache, so a model
+  pulled by runtime switching is not re-downloaded on every pod start. Kept
+  apart from `persistence` because the two want different sizes and different
+  retention. Neither may be mounted over `MODEL_DIR` (`/app/models`), which
+  holds the baked weights — the values document says so.
+- **`runtimeClassName`**: required wherever the NVIDIA container runtime is not
+  the cluster default. Without it a pod lands on a GPU node and starts with no
+  visible card.
+- **`gpu`** (`enabled`, `resourceKey`, `count`): the accelerator request, moved
+  out of `resources` so the vendor resource name is a value. `gpu.enabled:
+  false` also sets `DEVICE=cpu`.
+- **`podDisruptionBudget`**, **`networkPolicy`** (deny-by-default, with a DNS
+  egress allowance and a note that model switching needs hub egress),
+  **`priorityClassName`**, **`topologySpreadConstraints`**,
+  **`terminationGracePeriodSeconds`**, **`podLabels`**, **`service.annotations`**,
+  and **`extraVolumes`** / **`extraVolumeMounts`**.
+- **`fasterWhisper.apiKey.value`**: the chart creates the Secret. Previously
+  `existingSecret` was the only way to supply a key. Setting both is refused
+  rather than silently preferring one.
+- **`examples/self-hosted-values.yaml`**: the preinstalled-driver GPU Operator
+  shape (`driver.enabled=false`, `toolkit.enabled=false`).
+- The Deployment switches to the `Recreate` strategy when either volume is on,
+  because a ReadWriteOnce claim cannot be handed between two pods and a rolling
+  update would deadlock waiting for one.
+
+#### Changed
+- `fasterWhisper.resources` no longer carries `nvidia.com/gpu` — the `gpu` block
+  above owns it. Existing values files that set it keep working; the `gpu` block
+  writes the same request.
+- The Helm test follows the configured scheme rather than assuming HTTP.
+
+#### Not added
+- No `ServiceMonitor`. The server's telemetry endpoint `/system` returns JSON,
+  not Prometheus exposition format, so a ServiceMonitor would scrape nothing.
+  Exposing `/metrics` is server work, not chart work.
+
 ## [1.1.0]
 
 ### Added

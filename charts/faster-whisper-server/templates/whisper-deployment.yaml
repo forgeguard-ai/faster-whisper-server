@@ -8,23 +8,43 @@ spec:
   {{- if not .Values.autoscaling.enabled }}
   replicas: {{ .Values.fasterWhisper.replicaCount }}
   {{- end }}
+  {{- if and (or .Values.persistence.enabled .Values.hfCache.enabled) (not .Values.autoscaling.enabled) }}
+  # A ReadWriteOnce volume cannot be handed between two pods, so the default
+  # rolling update deadlocks: the new pod waits for a volume the old one still
+  # holds. Recreate accepts a gap instead of hanging.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "faster-whisper-server.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        {{- if .Values.fasterWhisper.apiKey.value }}
+        checksum/api-key: {{ .Values.fasterWhisper.apiKey.value | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "faster-whisper-server.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
     spec:
       {{- with .Values.fasterWhisper.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: {{ include "faster-whisper-server.serviceAccountName" . }}
+      {{- with .Values.runtimeClassName }}
+      runtimeClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
       securityContext:
         {{- toYaml .Values.podSecurityContext | nindent 8 }}
       containers:
@@ -33,24 +53,54 @@ spec:
             {{- toYaml .Values.securityContext | nindent 12 }}
           image: "{{ .Values.fasterWhisper.repository }}:{{ .Values.fasterWhisper.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.fasterWhisper.pullPolicy }}
-          # Override the image CMD so uvicorn listens on the configured port
-          # (which containerPort below advertises).
-          command: ["uvicorn"]
-          args:
-            - "server.main:app"
-            - "--host"
-            - "0.0.0.0"
-            - "--port"
-            - {{ .Values.fasterWhisper.port | default 8000 | quote }}
+          # No command override. The image entrypoint is `python -m server`, a
+          # uvicorn wrapper whose one job over the plain `uvicorn server.main:app`
+          # CLI is to generate and wire in the TLS certificate. Overriding the
+          # command — which this chart did until 1.2.0 — skips that, so
+          # TLS_ENABLED was silently ignored on Kubernetes. Host and port come
+          # from HOST/PORT below, which is why the override is not needed.
           env:
             - name: PYTHONUNBUFFERED
               value: "1"
+            - name: HOST
+              value: "0.0.0.0"
+            - name: PORT
+              value: {{ .Values.fasterWhisper.port | default 8000 | quote }}
+            - name: DEVICE
+              value: {{ if .Values.gpu.enabled }}cuda{{ else }}cpu{{ end }}
+            {{- if .Values.persistence.enabled }}
+            # Holds the TLS pair and the active-model marker.
+            - name: DATA_DIR
+              value: {{ .Values.persistence.mountPath | quote }}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - name: TLS_ENABLED
+              value: "true"
+            - name: TLS_SELF_SIGNED
+              value: {{ .Values.tls.selfSigned | quote }}
+            {{- with .Values.tls.cn }}
+            - name: TLS_CN
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with .Values.tls.san }}
+            - name: TLS_SAN
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- with (include "faster-whisper-server.tlsCertPath" .) }}
+            - name: TLS_CERT_FILE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- with (include "faster-whisper-server.tlsKeyPath" .) }}
+            - name: TLS_KEY_FILE
+              value: {{ . | quote }}
+            {{- end }}
+            {{- end }}
             {{- if .Values.fasterWhisper.apiKey.enabled }}
             - name: API_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ required "fasterWhisper.apiKey.existingSecret is required when apiKey.enabled" .Values.fasterWhisper.apiKey.existingSecret }}
-                  key: {{ .Values.fasterWhisper.apiKey.secretKey }}
+                  name: {{ include "faster-whisper-server.apiKeySecretName" . }}
+                  key: {{ include "faster-whisper-server.apiKeySecretKey" . }}
             {{- end }}
             {{- with .Values.fasterWhisper.extraEnv }}
             {{- toYaml . | nindent 12 }}
@@ -60,13 +110,52 @@ spec:
               containerPort: {{ .Values.fasterWhisper.port | default 8000 }}
               protocol: TCP
           startupProbe:
-            {{- toYaml .Values.fasterWhisper.probes.startup | nindent 12 }}
+            {{- include "faster-whisper-server.probe" (dict "probe" .Values.fasterWhisper.probes.startup "ctx" .) | nindent 12 }}
           livenessProbe:
-            {{- toYaml .Values.fasterWhisper.probes.liveness | nindent 12 }}
+            {{- include "faster-whisper-server.probe" (dict "probe" .Values.fasterWhisper.probes.liveness "ctx" .) | nindent 12 }}
           readinessProbe:
-            {{- toYaml .Values.fasterWhisper.probes.readiness | nindent 12 }}
+            {{- include "faster-whisper-server.probe" (dict "probe" .Values.fasterWhisper.probes.readiness "ctx" .) | nindent 12 }}
           resources:
-            {{- toYaml .Values.fasterWhisper.resources | nindent 12 }}
+            {{- include "faster-whisper-server.resources" . | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+            {{- if .Values.hfCache.enabled }}
+            # Never mount this over MODEL_DIR (/app/models): that path holds
+            # the weights baked into the image, and a volume there shadows them.
+            - name: hf-cache
+              mountPath: {{ .Values.hfCache.mountPath }}
+            {{- end }}
+            {{- if and .Values.tls.enabled .Values.tls.existingSecret }}
+            - name: tls
+              mountPath: /etc/faster-whisper/tls
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "faster-whisper-server.dataClaimName" . }}
+        {{- end }}
+        {{- if .Values.hfCache.enabled }}
+        - name: hf-cache
+          persistentVolumeClaim:
+            claimName: {{ include "faster-whisper-server.hfCacheClaimName" . }}
+        {{- end }}
+        {{- if and .Values.tls.enabled .Values.tls.existingSecret }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.existingSecret }}
+            defaultMode: 0400
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
@@ -77,5 +166,9 @@ spec:
       {{- end }}
       {{- with .Values.tolerations }}
       tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
         {{- toYaml . | nindent 8 }}
       {{- end }}

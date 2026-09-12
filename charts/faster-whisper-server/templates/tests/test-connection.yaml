@@ -11,6 +11,15 @@ spec:
     - name: wget
       image: busybox
       command: ['wget']
-      # /health is unauthenticated and returns 200 as soon as the pod serves.
-      args: ['{{ include "faster-whisper-server.fullname" . }}:{{ .Values.fasterWhisper.port }}/health']
+      args:
+        - '-q'
+        - '-O'
+        - '-'
+        {{- if .Values.tls.enabled }}
+        # The certificate is self-signed unless one was supplied, and this test
+        # checks reachability, not trust.
+        - '--no-check-certificate'
+        {{- end }}
+        # /health is unauthenticated and returns 200 as soon as the pod serves.
+        - '{{ if .Values.tls.enabled }}https{{ else }}http{{ end }}://{{ include "faster-whisper-server.fullname" . }}:{{ .Values.fasterWhisper.port }}/health'
   restartPolicy: Never
