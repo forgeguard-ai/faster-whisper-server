@@ -1,0 +1,97 @@
+# CPU-only deployment on a plain x86_64 cluster — no GPU, no device plugin, no
+# RuntimeClass.
+#
+# Worth saying plainly, because it surprises people: the published image is
+# built FROM nvidia/cuda and it runs perfectly well on a node with no NVIDIA
+# driver and no card. A CUDA base image is just a filesystem carrying the CUDA
+# user-space libraries; nothing in it runs at container start. CTranslate2 asks
+# for a device at model-load time, gets `cpu` from the env below, and never
+# opens the driver. You do NOT need a separate CPU image, and there isn't one.
+#
+# What that costs you is pull size, not correctness — the image is around 8 GB
+# compressed because of the CUDA layers and the baked model, so the first pod
+# start on a fresh node takes a while. Set pullPolicy: IfNotPresent (the
+# default) and let the node cache it.
+#
+# Architecture: the published images are linux/amd64. An arm64 (Jetson) image
+# is built only when a release is dispatched with publish_jetson, so on arm64
+# hardware check the tag exists before deploying.
+#
+# Three things below are easy to get wrong:
+#
+#   COMPUTE_TYPE  CTranslate2 cannot run float16 on CPU. The chart's default
+#                 for a CPU deployment is int8, which is both the fastest and
+#                 the only sensible choice; float32 works and is slower for no
+#                 quality gain worth having.
+#
+#   MODEL_SIZE    large-v3 on CPU is measured in minutes per minute of audio.
+#                 Use tiny/base/small and be realistic about throughput. Note
+#                 that this selects at RUNTIME — the image still carries
+#                 whatever was baked at build time, so a size that was not
+#                 baked is downloaded on start unless hfCache is on.
+#
+#   resources     A CPU deployment is CPU-bound in a way the GPU one is not.
+#                 Give it real cores; one core transcribing with `small` is
+#                 slower than most callers' timeouts.
+
+fasterWhisper:
+  replicaCount: 1
+  pullPolicy: IfNotPresent
+  extraEnv:
+    - name: COMPUTE_TYPE
+      value: int8
+    - name: MODEL_SIZE
+      value: small
+  resources:
+    requests:
+      cpu: "2"
+      memory: 2Gi
+    limits:
+      # No GPU memory to fall back on: the model, the audio buffers and the
+      # decoder all live in system RAM.
+      memory: 6Gi
+
+# The whole point of this file. Setting enabled: false drops the
+# nvidia.com/gpu request AND sets DEVICE=cpu in the container.
+gpu:
+  enabled: false
+
+# Must stay empty. Naming a RuntimeClass that the cluster does not define is a
+# scheduling failure, not a fallback — the pod stays Pending with no obvious
+# reason. A CPU cluster has no `nvidia` RuntimeClass.
+runtimeClassName: ""
+
+# Still worth enabling without a GPU: this volume holds the self-signed TLS
+# pair and the active-model marker, neither of which is GPU-related.
+persistence:
+  enabled: true
+  size: 2Gi
+  accessModes:
+    - ReadWriteOnce
+  retain: true
+
+# Off by default here. Runtime model switching still works without it, but
+# every pod start re-downloads a model that was not baked into the image.
+# Turn it on if you intend to switch sizes from the console.
+hfCache:
+  enabled: false
+
+tls:
+  enabled: false
+
+# A CPU deployment has no card to pin to, so it schedules anywhere. Left empty
+# deliberately — the GPU examples pin, this one must not.
+nodeSelector: {}
+tolerations: []
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    # Audio uploads exceed the default body limit. Needed on CPU too.
+    nginx.ingress.kubernetes.io/proxy-body-size: "25m"
+  hosts:
+    - host: whisper.example.com
+      paths:
+        - path: /
+          pathType: Prefix
