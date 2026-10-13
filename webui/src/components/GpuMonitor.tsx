@@ -100,8 +100,8 @@ function ActivityPill({ active, waiting }: { active: number; waiting: number }) 
 
 /**
  * Compact GPU-performance + request-activity monitor, theme-matched to the
- * console. Polls the open /system endpoint every 3s; the reusable sibling of
- * qwen3-tts-server's GpuMonitor. Renders nothing until the first poll returns.
+ * console. Polls the open /system endpoint every 3s. Renders nothing until
+ * the first poll returns.
  */
 export function GpuMonitor() {
   const [system, setSystem] = useState<SystemInfo | null>(null)
