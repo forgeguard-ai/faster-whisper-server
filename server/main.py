@@ -18,7 +18,7 @@ from server.auth import require_api_key
 from server.model_status import ModelStatus
 from server.version import __version__
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=getattr(logging, config.LOG_LEVEL, logging.INFO))
 LOGGER = logging.getLogger("faster_whisper_api")
 
 

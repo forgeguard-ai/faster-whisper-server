@@ -8,6 +8,15 @@ the single source of truth for the release version.
 Per-PR detail is published automatically on each GitHub release page; this file
 is the curated summary.
 
+## [Unreleased]
+
+### Added
+
+- **`LOG_LEVEL`** sets the server's log level, for its own logger and uvicorn's
+  (`DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`; default `INFO`). It was fixed
+  at `INFO` before. An unknown value falls back to `INFO`. Transcript text still
+  needs `LOG_INPUT_TEXT` at every level.
+
 ## [1.2.0]
 
 **A Helm chart release: the server code is unchanged.** The version moves
