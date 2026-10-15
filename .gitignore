@@ -24,3 +24,6 @@ htmlcov/
 # Ignore IDE, Editor Files
 .idea/
 .vscode/
+
+# Local agent planning notes; never committed.
+docs/agent-plans/
