@@ -48,8 +48,8 @@ jobs:
           echo "image_base=${BASE}" >> "$GITHUB_OUTPUT"
 
           # Validation runs push only the version tags, never :latest. The
-          # unsuffixed alias (${BASE}:${VER}) is required for Agent Command's
-          # amd64 auto-select.
+          # unsuffixed alias (${BASE}:${VER}) is the default amd64 image, for
+          # deployers that pick a tag without an architecture suffix.
           AMD="${BASE}-cu128:${VER},${BASE}:${VER}"
           JET="${BASE}-jetson:${VER}"
           if [ "${{ github.event_name }}" != "workflow_dispatch" ] || [ "${{ inputs.validate_only }}" != "true" ]; then
