@@ -80,6 +80,16 @@ QUEUE_TIMEOUT_S = float(os.getenv("QUEUE_TIMEOUT_S", "120"))
 # transcription temp file; RETENTION_DAYS is reserved for any future stored
 # artifacts (0 = keep forever).
 LOG_INPUT_TEXT = _as_bool(os.getenv("LOG_INPUT_TEXT", "false"))
+
+# --- Logging ----------------------------------------------------------------
+# LOG_LEVEL sets the app's own logger and uvicorn's (DEBUG, INFO, WARNING,
+# ERROR, CRITICAL; any case). An unknown name falls back to INFO rather than
+# stopping the server over a typo. It changes how much is logged, never what:
+# transcript text stays behind LOG_INPUT_TEXT at every level.
+_LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").strip().upper()
+if LOG_LEVEL not in _LOG_LEVELS:
+    LOG_LEVEL = "INFO"
 PERSIST_AUDIO = _as_bool(os.getenv("PERSIST_AUDIO", "false"))
 RETENTION_DAYS = int(os.getenv("RETENTION_DAYS", "0"))
 

@@ -61,6 +61,7 @@ comments.
 
 | Variable | Default | Purpose |
 |---|---|---|
+| `LOG_LEVEL` | `INFO` | The server's log level, for its own logger and uvicorn's: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL` (any case; anything else is `INFO`). It never adds transcript text; that is `LOG_INPUT_TEXT` alone |
 | `LOG_INPUT_TEXT` | `false` | Log transcript text — **keep off**; transcripts are sensitive PII. Off logs only lengths and timings |
 | `PERSIST_AUDIO` | `false` | **Reserved / not enforced.** No code path persists audio; uploads always use a per-request temp file that is deleted afterward |
 | `RETENTION_DAYS` | `0` | **Reserved / not enforced.** Placeholder for future stored-artifact retention |

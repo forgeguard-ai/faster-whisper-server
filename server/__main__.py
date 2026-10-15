@@ -55,6 +55,7 @@ def main() -> None:
         "server.main:app",
         host=config.HOST,
         port=config.PORT,
+        log_level=config.LOG_LEVEL.lower(),
         **ssl_kwargs,
     )
 
