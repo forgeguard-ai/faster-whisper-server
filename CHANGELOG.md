@@ -10,6 +10,25 @@ is the curated summary.
 
 ## [Unreleased]
 
+## [1.2.2]
+
+### Security
+
+- **The web console builds on Node 26.12.1**, the October 2026 Node.js security
+  release (CVE-2026-111497 in the Brotli decoder, plus a CA store without the
+  compromised eMudhra roots). Both images pin `node:26.12.1-slim` by its
+  multi-arch digest; it was the floating `node:22-slim`. The Node stage only
+  builds static assets, but a build should not run on a vulnerable runtime
+  either.
+- **certifi 2026.10.23** in `uv.lock` (from 2026.6.17): the CA bundle the
+  server's HTTP clients verify against. Since 2026.10.19 it no longer trusts the
+  root behind the compromised eMudhra intermediates (emSign ECC Root CA - G3).
+  The images install the locked set (`uv sync --frozen`), so the lock is what
+  moves them. The lock also records the project's own version, which it had left at
+  1.1.0.
+
+## [1.2.1]
+
 ### Added
 
 - **`LOG_LEVEL`** sets the server's log level, for its own logger and uvicorn's
